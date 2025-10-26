@@ -254,4 +254,82 @@ with tab1:
     st.header("AI 메뉴 추천 결과")
     
     if is_unlimited_budget:
-        budget_display = "무제
+        budget_display = "무제한"
+    else:
+        budget_display = f"{st.session_state['total_budget']:,}원 (1인당 {budget:,}원)"
+        
+    st.info(f"선택 인원: **{person_count}명** | 총 예산: **{budget_display}** | 베이커리 개수: **{bakery_count}개** | 선택 태그: **{', '.join(selected_tags) if selected_tags else '없음'}**")
+
+    # 추천 실행 및 결과 표시
+    recommendations = recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bakery_count, df_drinks, df_bakeries)
+
+    if recommendations:
+        st.subheader(f"✅ 조건에 맞는 조합 **{len(recommendations)}세트**를 추천합니다! (점수 높은 순)")
+        
+        cols = st.columns(len(recommendations))
+        
+        for i, rec in enumerate(recommendations):
+            with cols[i]:
+                st.markdown(f"### 🍰 추천 세트 #{i+1}")
+                st.caption(f"**총 점수: {rec['score']}**") 
+                
+                # 가격 정보 표시
+                if is_unlimited_budget:
+                    st.markdown(f"**총 가격: {rec['total_price']:,}원**")
+                else:
+                    remaining_budget = st.session_state['total_budget'] - rec['total_price']
+                    st.metric(
+                        label="총 가격", 
+                        value=f"{rec['total_price']:,}원", 
+                        delta=f"{remaining_budget:,}원 남음"
+                    )
+                st.markdown("---")
+                
+                # 음료 추천 표시
+                st.markdown(f"#### ☕ **음료 추천 ({person_count}개)**")
+                drink_counts = pd.Series([item['Name'] for item in rec['drink_set']]).value_counts()
+                for name, count in drink_counts.items():
+                    item_info = next(item for item in rec['drink_set'] if item['Name'] == name)
+                    st.markdown(f"- **{name}** x{count} ({item_info['Price']:,}원)")
+                    st.caption(f"  태그: {item_info['Hashtags']} (점수: {item_info['Score']})")
+                
+                # 베이커리 추천 표시
+                st.markdown(f"#### 🍞 **베이커리 추천 ({bakery_count}개)**")
+                for item in rec['bakery_set']:
+                    if item.get('Category') == '베이커리': 
+                        st.markdown(f"- **{item['Name']}** ({item['Price']:,}원)")
+                        st.caption(f"  태그: {item['Hashtags']} (점수: {item['Score']})")
+                    
+    else:
+        if len(df_bakeries) < bakery_count:
+            st.warning(f"😭 베이커리 메뉴판에 총 {len(df_bakeries)}개의 메뉴만 있습니다. **선택하신 베이커리 개수({bakery_count}개)보다 적습니다.** 베이커리 개수를 줄여주세요.")
+        else:
+            st.warning("😭 해당 조건(인원수/예산/태그/베이커리 개수)에 맞는 조합을 찾을 수 없습니다. 예산을 늘리거나, 태그를 제거하거나, 베이커리 개수를 줄여보세요.")
+
+
+with tab2:
+    st.header("📜 메뉴판")
+    st.markdown("베이커리의 전체 메뉴판을 확인하세요.")
+
+    # 메뉴판 사진 표시 (FileNotFoundError 처리 필요 시)
+    try:
+        col_img1, col_img2 = st.columns(2)
+        # 이미지가 없다는 가정 하에 임시로 주석 처리하거나, 실제 파일명 사용
+        # with col_img1:
+        #     st.image("menu_board_1.png", caption="메뉴판 (음료/베이커리 1)")
+        # with col_img2:
+        #     st.image("menu_board_2.png", caption="메뉴판 (음료/베이커리 2)")
+        pass
+    except Exception:
+        pass
+        
+    st.markdown("---")
+    
+    # 전체 메뉴표 데이터프레임으로 표시
+    st.subheader("전체 메뉴 리스트")
+    st.dataframe(df_menu[['Category', 'Name', 'Price', 'Hashtags']].rename(columns={
+        'Category': '구분', 
+        'Name': '메뉴명', 
+        'Price': '가격 (원)',
+        'Hashtags': '태그'
+    }), use_container_width=True, hide_index=True)
