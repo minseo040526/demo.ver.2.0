@@ -56,7 +56,6 @@ df_bakeries = df_menu[df_menu['Category'] == '베이커리'].copy()
 # --- 점수 기반 필터링 및 추천 함수 ---
 def get_scored_menu(df, selected_tags):
     """메뉴와 선택된 태그 간의 일치 점수를 계산하여 새 컬럼에 추가하고 정렬합니다."""
-    # .copy()를 사용하여 원본 DataFrame 변경 방지
     df_copy = df.copy() 
     if not selected_tags:
         df_copy['Score'] = 1 
@@ -132,6 +131,7 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
             
             # 남은 예산으로 구매 가능한 메뉴만 필터링
             if not is_unlimited_budget:
+                # 현재 남은 잔액으로 구매 가능한 메뉴
                 affordable_items = temp_bakery_pool[
                     temp_bakery_pool['Price'] <= remaining_budget - current_bakery_price
                 ]
@@ -151,9 +151,9 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
                  break
                  
             # 상위 항목 중에서 무작위로 하나 선택
-            # **iloc[0]로 얻은 Series가 아닌, DataFrame에서 바로 to_dict('records')를 사용해 안정성 확보**
+            # DataFrame에서 to_dict('records')를 사용해 안정성 확보
             selected_bakery_df = top_affordable.sample(1)
-            selected_bakery_dict = selected_bakery_df[COLS_TO_DICT].to_dict('records')[0] # Dictionary로 안전하게 변환
+            selected_bakery_dict = selected_bakery_df[COLS_TO_DICT].to_dict('records')[0]
             
             # 선택된 메뉴 정보 업데이트
             current_bakery_price += selected_bakery_dict['Price']
@@ -196,7 +196,7 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
     return recommendations
 
 
-# --- Streamlit 앱 구성 (이전과 동일) ---
+# --- Streamlit 앱 구성 ---
 st.set_page_config(layout="wide")
 
 # 사이드바 (메뉴 추천 설정)
@@ -272,8 +272,9 @@ tab1, tab2 = st.tabs(["AI 메뉴 추천", "메뉴판"])
 with tab1:
     st.header("AI 메뉴 추천 결과")
     
+    # 여기서 문자열을 닫는 따옴표("무제한")가 빠져있어 오류가 발생했을 가능성이 높습니다.
     if is_unlimited_budget:
-        budget_display = "무제한"
+        budget_display = "무제한" 
     else:
         budget_display = f"{st.session_state['total_budget']:,}원 (1인당 {budget:,}원)"
         
