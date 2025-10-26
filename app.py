@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import random
 import re
-from itertools import combinations # 조합을 위해 필요
+from itertools import combinations 
 
 # --- 데이터 로드 및 전처리 함수 ---
 @st.cache_data
@@ -21,17 +21,17 @@ def load_and_preprocess_data():
             # 임시 데이터는 이전과 동일하게 유지
             if category_name == '베이커리':
                 return pd.DataFrame({
-                    'Category': ['베이커리', '베이커리', '베이커리', '베이커리', '베이커리'],
-                    'Name': ['크로와상', '소금빵', '에그타르트', '샌드위치', '마들렌'],
-                    'Price': [3500, 3200, 4000, 6000, 2500],
-                    'Hashtags': ['#버터#고소한', '#짭짤한#인기', '#달콤한', '#든든한', '#작은']
+                    'Category': ['베이커리', '베이커리', '베이커리', '베이커리', '베이커리', '베이커리', '베이커리', '베이커리', '베이커리', '베이커리'],
+                    'Name': ['크로와상', '소금빵', '에그타르트', '샌드위치', '마들렌', '치즈 베이글', '초코 스콘', '팥빙수(1인)', '치아바타', '잠봉 샌드위치'],
+                    'Price': [3500, 3200, 4000, 6000, 2500, 3500, 4200, 6000, 4500, 8500],
+                    'Hashtags': ['#버터#고소한', '#짭짤한#인기', '#달콤한', '#든든한', '#작은', '#치즈#고소한', '#달콤한#초코', '#달콤한', '#담백한', '#든든한']
                 })
             else:
                 return pd.DataFrame({
-                    'Category': ['음료', '음료', '음료', '음료'],
-                    'Name': ['아메리카노', '카페 라떼', '녹차', '오렌지 주스'],
-                    'Price': [4000, 5000, 4500, 5500],
-                    'Hashtags': ['#깔끔#가벼운', '#부드러운#우유', '#전통#건강', '#상큼한']
+                    'Category': ['음료', '음료', '음료', '음료', '음료', '음료'],
+                    'Name': ['아메리카노', '카페 라떼', '녹차', '오렌지 주스', '바닐라 라떼', '흑임자 라떼'],
+                    'Price': [4000, 5000, 4500, 5500, 5500, 6000],
+                    'Hashtags': ['#깔끔#가벼운', '#부드러운#우유', '#전통#건강', '#상큼한', '#달콤한#디저트용', '#고소한']
                 })
 
     df_bakery = load_data("Bakery_menu.csv", '베이커리')
@@ -81,8 +81,10 @@ def try_bakery_combination(k, pool, remaining_budget, is_unlimited):
     for combo_items in combinations(bakery_list, k):
         combo_price = sum(item['Price'] for item in combo_items)
         
+        # 예산 체크는 무조건 수행
         if is_unlimited or (combo_price <= remaining_budget):
             # Score 포함하여 딕셔너리로 변환
+            # 안정적인 변환을 위해 COLS_TO_DICT의 값만 사용
             combo_dicts = [item[COLS_TO_DICT].to_dict() for item in combo_items]
             combo_score = sum(item['Score'] for item in combo_dicts)
             
@@ -92,7 +94,11 @@ def try_bakery_combination(k, pool, remaining_budget, is_unlimited):
                 'score': combo_score
             })
     
-    return possible_combinations
+    # 가능한 조합들을 점수 순으로 정렬하여, 점수가 높은 조합을 먼저 선택할 수 있도록 함
+    possible_combinations.sort(key=lambda x: x['score'], reverse=True)
+    
+    # 너무 많은 조합이 생성되는 것을 방지하기 위해 상위 100개만 반환 (속도 개선)
+    return possible_combinations[:100]
 
 
 def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bakery_count, df_drinks, df_bakeries):
@@ -110,21 +116,20 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
     attempts = 0
     max_attempts = 300 
 
-    # 베이커리 조합 시도
-    
-    # 베이커리 풀 설정: 점수가 높은 상위 메뉴만 사용
-    n_bakeries_pool = max(bakery_count, int(len(scored_bakeries) * 0.7))
+    # 베이커리 풀 설정: 점수가 높은 상위 메뉴를 더 많이 사용 (안정성을 위해 10개 이상)
+    n_bakeries_pool = max(10, bakery_count, int(len(scored_bakeries) * 0.7)) # 최소 10개 메뉴 사용
     bakeries_pool = scored_bakeries.head(n_bakeries_pool)
 
     if len(bakeries_pool) < bakery_count:
-        st.warning(f"⚠️ 메뉴판에 {bakery_count}개 조합을 만들기에 충분한 베이커리(현재 {len(bakeries_pool)}개)가 없습니다. 베이커리 개수를 줄여주세요.")
+        # 이 경고 메시지는 Streamlit UI에 표시되도록 변경
+        # st.warning(f"⚠️ 메뉴판에 {bakery_count}개 조합을 만들기에 충분한 베이커리(현재 {len(bakeries_pool)}개)가 없습니다. 베이커리 개수를 줄여주세요.")
         return []
 
     while len(recommendations) < 3 and attempts < max_attempts:
         attempts += 1
         
         # 1. 음료 선택 (점수가 높은 메뉴를 우선적으로 선택)
-        n_drinks = max(3, int(len(scored_drinks) * 0.7))
+        n_drinks = max(5, int(len(scored_drinks) * 0.7)) # 드링크 풀 사이즈도 확장
         drinks_pool = scored_drinks.head(n_drinks)
         
         selected_drinks_df = drinks_pool.sample(person_count, replace=True)
@@ -143,11 +148,14 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
         )
         
         if not possible_bakery_combos:
-            # 베이커리 조합을 찾을 수 없으면 다음 음료 세트로 넘어감
+            # 예산 또는 메뉴 부족으로 베이커리 조합을 찾을 수 없으면 다음 음료 세트로 넘어감
             continue
 
-        # 가능한 조합 중 하나를 무작위로 선택
-        selected_combo = random.choice(possible_bakery_combos)
+        # 가능한 조합 중 상위 점수 조합 중에서 무작위로 하나 선택 (다양성 확보)
+        # 상위 10개 조합 내에서 랜덤하게 선택
+        top_n_combos = possible_bakery_combos[:10] 
+        selected_combo = random.choice(top_n_combos)
+        
         bakery_set = selected_combo['set']
         total_bakery_price = selected_combo['price']
         bakery_score = selected_combo['score']
@@ -195,7 +203,7 @@ with st.sidebar:
     bakery_count = st.slider(
         "🍞 베이커리 개수를 선택해주세요", 
         min_value=1, 
-        max_value=4, # 최대 4개
+        max_value=4, 
         value=2
     )
 
@@ -300,7 +308,11 @@ with tab1:
                         st.caption(f"  태그: {item['Hashtags']} (점수: {item['Score']})")
                     
     else:
-        st.warning("😭 해당 조건(인원수/예산/태그/베이커리 개수)에 맞는 조합을 찾을 수 없거나, 메뉴판에 메뉴가 충분하지 않습니다. 조건을 조정해보세요.")
+        # 베이커리 개수와 메뉴 풀 사이즈를 비교하여 사용자에게 더 구체적인 안내를 제공
+        if len(df_bakeries) < bakery_count:
+            st.warning(f"😭 베이커리 메뉴판에 총 {len(df_bakeries)}개의 메뉴만 있습니다. **선택하신 베이커리 개수({bakery_count}개)보다 적습니다.** 베이커리 개수를 줄여주세요.")
+        else:
+            st.warning("😭 해당 조건(인원수/예산/태그/베이커리 개수)에 맞는 조합을 찾을 수 없습니다. 예산을 늘리거나, 태그를 제거하거나, 베이커리 개수를 줄여보세요.")
 
 
 with tab2:
