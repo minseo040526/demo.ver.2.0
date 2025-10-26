@@ -14,6 +14,7 @@ def load_and_preprocess_data():
             df.columns = df.columns.str.strip().str.lower()
             df = df.rename(columns={'name': 'Name', 'price': 'Price', 'tags': 'Hashtags'}, errors='ignore')
             df['Category'] = category_name
+            # 필요한 컬럼만 선택
             df = df[['Category', 'Name', 'Price', 'Hashtags']].reset_index(drop=True) 
             return df
         except FileNotFoundError:
@@ -272,7 +273,7 @@ tab1, tab2 = st.tabs(["AI 메뉴 추천", "메뉴판"])
 with tab1:
     st.header("AI 메뉴 추천 결과")
     
-    # 여기서 문자열을 닫는 따옴표("무제한")가 빠져있어 오류가 발생했을 가능성이 높습니다.
+    # 257번째 줄 오류 해결: 문자열을 명확하게 닫음
     if is_unlimited_budget:
         budget_display = "무제한" 
     else:
