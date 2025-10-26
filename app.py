@@ -56,6 +56,7 @@ df_bakeries = df_menu[df_menu['Category'] == '베이커리'].copy()
 # --- 점수 기반 필터링 및 추천 함수 ---
 def get_scored_menu(df, selected_tags):
     """메뉴와 선택된 태그 간의 일치 점수를 계산하여 새 컬럼에 추가하고 정렬합니다."""
+    # .copy()를 사용하여 원본 DataFrame 변경 방지
     df_copy = df.copy() 
     if not selected_tags:
         df_copy['Score'] = 1 
@@ -87,7 +88,8 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
     BAKERY_POOL_SIZE = min(20, len(scored_bakeries))
     
     drinks_pool = scored_drinks.head(DRINK_POOL_SIZE)
-    bakeries_pool = scored_bakeries.head(BAKERY_POOL_SIZE).copy() # 베이커리 풀 복사
+    # 베이커리 풀은 .copy()를 사용해 독립적인 DataFrame 유지
+    bakeries_pool = scored_bakeries.head(BAKERY_POOL_SIZE).copy().reset_index(drop=True) 
 
     if len(bakeries_pool) < bakery_count:
         return []
@@ -116,15 +118,13 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
         
         # 2. 베이커리 선택 (순차적/점수 기반 선택)
         bakery_set = []
-        total_bakery_price = 0
-        bakery_score = 0
         
         current_bakery_price = 0
         current_bakery_score = 0
         current_bakery_items = []
         
-        # 베이커리 풀을 복사하고 점수가 높은 순서대로 처리 (원본 순서 유지)
-        temp_bakery_pool = bakeries_pool.copy().reset_index(drop=True)
+        # 현재 탐색 풀: 매 반복마다 베이커리 풀의 복사본을 사용하여 메뉴 중복 선택을 방지
+        temp_bakery_pool = bakeries_pool.copy()
         
         is_successful_bakery_selection = True
         
@@ -132,7 +132,6 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
             
             # 남은 예산으로 구매 가능한 메뉴만 필터링
             if not is_unlimited_budget:
-                # 현재 남은 잔액으로 구매 가능한 메뉴
                 affordable_items = temp_bakery_pool[
                     temp_bakery_pool['Price'] <= remaining_budget - current_bakery_price
                 ]
@@ -152,16 +151,17 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
                  break
                  
             # 상위 항목 중에서 무작위로 하나 선택
-            selected_bakery_series = top_affordable.sample(1).iloc[0]
+            # **iloc[0]로 얻은 Series가 아닌, DataFrame에서 바로 to_dict('records')를 사용해 안정성 확보**
+            selected_bakery_df = top_affordable.sample(1)
+            selected_bakery_dict = selected_bakery_df[COLS_TO_DICT].to_dict('records')[0] # Dictionary로 안전하게 변환
             
-            # 선택된 메뉴 정보 업데이트 (KeyError 방지를 위해 Series에서 to_dict() 사용)
-            selected_bakery_dict = selected_bakery_series[COLS_TO_DICT].to_dict()
-            
+            # 선택된 메뉴 정보 업데이트
             current_bakery_price += selected_bakery_dict['Price']
             current_bakery_score += selected_bakery_dict['Score']
             current_bakery_items.append(selected_bakery_dict)
             
             # 다음 선택에서 중복을 피하기 위해 풀에서 제거
+            # Name을 기준으로 제거
             temp_bakery_pool = temp_bakery_pool[temp_bakery_pool['Name'] != selected_bakery_dict['Name']].reset_index(drop=True)
         
         
@@ -196,7 +196,7 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
     return recommendations
 
 
-# --- Streamlit 앱 구성 (변경 없음) ---
+# --- Streamlit 앱 구성 (이전과 동일) ---
 st.set_page_config(layout="wide")
 
 # 사이드바 (메뉴 추천 설정)
