@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 import random
 import re
-# itertools.combinations 사용을 중단하여 로딩 문제를 해결합니다.
-# from itertools import combinations 
 
 # --- 데이터 로드 및 전처리 함수 ---
 @st.cache_data
@@ -64,6 +62,7 @@ def get_scored_menu(df, selected_tags):
     else:
         df_copy['Score'] = df_copy['Tag_List'].apply(lambda x: len(set(x) & set(selected_tags)))
     
+    # 점수 높은 순, 가격 낮은 순 정렬
     return df_copy.sort_values(by=['Score', 'Price'], ascending=[False, True]).reset_index(drop=True)
 
 # 딕셔너리로 변환할 때 사용할 컬럼 목록
@@ -82,96 +81,116 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, bak
     recommendations = []
     
     attempts = 0
-    max_attempts = 300 
-
-    # 베이커리 풀 설정: 점수가 높은 상위 메뉴를 사용 (최소 10개)
-    n_bakeries_pool = max(10, bakery_count, int(len(scored_bakeries) * 0.7)) 
-    bakeries_pool = scored_bakeries.head(n_bakeries_pool)
+    max_attempts = 100 
+    
+    DRINK_POOL_SIZE = min(20, len(scored_drinks))
+    BAKERY_POOL_SIZE = min(20, len(scored_bakeries))
+    
+    drinks_pool = scored_drinks.head(DRINK_POOL_SIZE)
+    bakeries_pool = scored_bakeries.head(BAKERY_POOL_SIZE).copy() # 베이커리 풀 복사
 
     if len(bakeries_pool) < bakery_count:
         return []
 
+
     while len(recommendations) < 3 and attempts < max_attempts:
         attempts += 1
         
-        # 1. 음료 선택 (점수가 높은 메뉴를 우선적으로 선택)
-        n_drinks = max(5, int(len(scored_drinks) * 0.7)) 
-        drinks_pool = scored_drinks.head(n_drinks)
-        
-        selected_drinks_df = drinks_pool.sample(person_count, replace=True)
+        # 1. 음료 선택 (점수 가중치 기반 샘플링)
+        try:
+            weights = drinks_pool['Score'].apply(lambda x: x if x > 0 else 0.1)
+            selected_drinks_df = drinks_pool.sample(
+                n=person_count, 
+                replace=True, 
+                weights=weights
+            )
+            
+        except ValueError:
+            continue
+
         drink_set = selected_drinks_df[COLS_TO_DICT].to_dict('records')
         total_drink_price = selected_drinks_df['Price'].sum()
         drink_score = selected_drinks_df['Score'].sum()
         
         remaining_budget = total_budget - total_drink_price
         
-        # 2. 베이커리 선택 (무작위 샘플링 기반으로 복잡도 감소)
+        # 2. 베이커리 선택 (순차적/점수 기반 선택)
         bakery_set = []
         total_bakery_price = 0
         bakery_score = 0
         
-        # 예산이 충분한 메뉴만 필터링 (무제한 예산이 아니면서 남은 예산보다 가격이 비싼 메뉴 제외)
-        if not is_unlimited_budget:
-            # 베이커리 풀을 예산에 맞춰 필터링
-            affordable_pool = bakeries_pool[bakeries_pool['Price'] <= remaining_budget].copy()
-            
-            # 남은 예산으로 최소한의 베이커리(가장 싼 메뉴 * bakery_count)도 못 살 경우 조합 불가
-            if affordable_pool.empty:
-                continue
-
-            # 샘플링을 위해 affordable_pool을 사용
-            current_pool = affordable_pool
-        else:
-            current_pool = bakeries_pool.copy()
-
-        # 베이커리 개수만큼 무작위 샘플링 (중복 제거)
-        if len(current_pool) >= bakery_count:
-            try:
-                # 점수 높은 메뉴를 우선적으로 샘플링하도록, 가중치를 점수에 비례하게 적용
-                weights = current_pool['Score'].apply(lambda x: x if x > 0 else 0.1)
-                
-                selected_bakeries = current_pool.sample(
-                    n=bakery_count, 
-                    replace=False, # 중복 선택 방지
-                    weights=weights
-                )
-                
-                bakery_set = selected_bakeries[COLS_TO_DICT].to_dict('records')
-                total_bakery_price = selected_bakeries['Price'].sum()
-                bakery_score = selected_bakeries['Score'].sum()
-
-                # 최종 예산 확인 (샘플링 후 합산된 가격이 예산을 초과할 수 있으므로)
-                if not is_unlimited_budget and total_bakery_price > remaining_budget:
-                    # 예산 초과 시 조합 실패로 간주하고 다음 시도로 넘어감
-                    continue
-                    
-            except ValueError:
-                 # weights가 모두 0이거나 기타 샘플링 오류 시
-                 continue
-        else:
-            # 베이커리 풀 크기가 필요한 개수보다 작으면 조합 불가
-            continue
+        current_bakery_price = 0
+        current_bakery_score = 0
+        current_bakery_items = []
         
+        # 베이커리 풀을 복사하고 점수가 높은 순서대로 처리 (원본 순서 유지)
+        temp_bakery_pool = bakeries_pool.copy().reset_index(drop=True)
+        
+        is_successful_bakery_selection = True
+        
+        for i in range(bakery_count):
+            
+            # 남은 예산으로 구매 가능한 메뉴만 필터링
+            if not is_unlimited_budget:
+                # 현재 남은 잔액으로 구매 가능한 메뉴
+                affordable_items = temp_bakery_pool[
+                    temp_bakery_pool['Price'] <= remaining_budget - current_bakery_price
+                ]
+            else:
+                affordable_items = temp_bakery_pool
+
+            if affordable_items.empty:
+                is_successful_bakery_selection = False
+                break
+                
+            # 가장 점수가 높은 메뉴를 선택 (가장 위에 있으므로 iloc[0])
+            # 다만, 다양한 조합 생성을 위해 상위 3개 중 하나를 랜덤으로 선택
+            top_affordable = affordable_items.head(3)
+            
+            if top_affordable.empty:
+                 is_successful_bakery_selection = False
+                 break
+                 
+            # 상위 항목 중에서 무작위로 하나 선택
+            selected_bakery_series = top_affordable.sample(1).iloc[0]
+            
+            # 선택된 메뉴 정보 업데이트 (KeyError 방지를 위해 Series에서 to_dict() 사용)
+            selected_bakery_dict = selected_bakery_series[COLS_TO_DICT].to_dict()
+            
+            current_bakery_price += selected_bakery_dict['Price']
+            current_bakery_score += selected_bakery_dict['Score']
+            current_bakery_items.append(selected_bakery_dict)
+            
+            # 다음 선택에서 중복을 피하기 위해 풀에서 제거
+            temp_bakery_pool = temp_bakery_pool[temp_bakery_pool['Name'] != selected_bakery_dict['Name']].reset_index(drop=True)
+        
+        
+        if is_successful_bakery_selection and len(current_bakery_items) == bakery_count:
+            bakery_set = current_bakery_items
+            total_bakery_price = current_bakery_price
+            bakery_score = current_bakery_score
+        else:
+            continue # 베이커리 선택 실패
+
         
         # 3. 최종 추천 리스트에 추가
-        if bakery_set:
-            total_price = total_drink_price + total_bakery_price
-            total_score = drink_score + bakery_score
+        total_price = total_drink_price + total_bakery_price
+        total_score = drink_score + bakery_score
             
-            drink_names_sorted = sorted([item['Name'] for item in drink_set])
-            bakery_names_sorted = sorted([item['Name'] for item in bakery_set])
-            set_key = (tuple(drink_names_sorted), tuple(bakery_names_sorted))
+        drink_names_sorted = sorted([item['Name'] for item in drink_set])
+        bakery_names_sorted = sorted([item['Name'] for item in bakery_set])
+        set_key = (tuple(drink_names_sorted), tuple(bakery_names_sorted))
             
-            is_duplicate = any(rec['key'] == set_key for rec in recommendations)
+        is_duplicate = any(rec['key'] == set_key for rec in recommendations)
 
-            if not is_duplicate:
-                recommendations.append({
-                    'key': set_key, 
-                    'drink_set': drink_set,
-                    'bakery_set': bakery_set,
-                    'total_price': total_price,
-                    'score': total_score 
-                })
+        if not is_duplicate:
+            recommendations.append({
+                'key': set_key, 
+                'drink_set': drink_set,
+                'bakery_set': bakery_set,
+                'total_price': total_price,
+                'score': total_score 
+            })
 
     recommendations.sort(key=lambda x: x['score'], reverse=True)
     return recommendations
@@ -311,20 +330,6 @@ with tab2:
     st.header("📜 메뉴판")
     st.markdown("베이커리의 전체 메뉴판을 확인하세요.")
 
-    # 메뉴판 사진 표시 (FileNotFoundError 처리 필요 시)
-    try:
-        col_img1, col_img2 = st.columns(2)
-        # 이미지가 없다는 가정 하에 임시로 주석 처리하거나, 실제 파일명 사용
-        # with col_img1:
-        #     st.image("menu_board_1.png", caption="메뉴판 (음료/베이커리 1)")
-        # with col_img2:
-        #     st.image("menu_board_2.png", caption="메뉴판 (음료/베이커리 2)")
-        pass
-    except Exception:
-        pass
-        
-    st.markdown("---")
-    
     # 전체 메뉴표 데이터프레임으로 표시
     st.subheader("전체 메뉴 리스트")
     st.dataframe(df_menu[['Category', 'Name', 'Price', 'Hashtags']].rename(columns={
