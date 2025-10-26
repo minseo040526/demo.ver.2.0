@@ -14,7 +14,6 @@ def load_and_preprocess_data():
             df.columns = df.columns.str.strip().str.lower()
             df = df.rename(columns={'name': 'Name', 'price': 'Price', 'tags': 'Hashtags'}, errors='ignore')
             df['Category'] = category_name
-            # 필요한 컬럼만 선택하고, 인덱스를 0부터 재설정 (안정성 확보)
             df = df[['Category', 'Name', 'Price', 'Hashtags']].reset_index(drop=True) 
             return df
         except FileNotFoundError:
@@ -56,7 +55,7 @@ df_bakeries = df_menu[df_menu['Category'] == '베이커리'].copy()
 
 # --- 점수 기반 필터링 및 추천 함수 ---
 def get_scored_menu(df, selected_tags):
-    """메뉴와 선택된 태그 간의 일치 점수를 계산하여 새 컬럼에 추가합니다."""
+    """메뉴와 선택된 태그 간의 일치 점수를 계산하여 새 컬럼에 추가하고 정렬합니다."""
     if not selected_tags:
         df['Score'] = 1 # 태그 선택 없으면 모든 메뉴 점수 1
     else:
@@ -67,13 +66,11 @@ def get_scored_menu(df, selected_tags):
 
 
 def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_drinks, df_bakeries):
-    """
-    점수, 인원수, 예산, 해시태그를 고려하여 음료(인원수)와 베이커리(1~2개) 조합 3세트를 추천합니다.
-    """
     
     total_budget = float('inf') if is_unlimited_budget else (budget * person_count)
 
     # 1. 점수 기반으로 메뉴 목록 생성
+    # get_scored_menu 함수가 Score 컬럼을 생성하고 정렬까지 완료합니다.
     scored_drinks = get_scored_menu(df_drinks.copy(), selected_tags)
     scored_bakeries = get_scored_menu(df_bakeries.copy(), selected_tags)
 
@@ -89,13 +86,11 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_
         attempts += 1
         
         # 2. 음료 선택 (점수가 높은 메뉴를 우선적으로 선택)
-        # 높은 점수 메뉴 중에서만 샘플링 (점수 상위 70% 또는 최소 3개)
         n_drinks = max(3, int(len(scored_drinks) * 0.7))
         drinks_pool = scored_drinks.head(n_drinks)
         
-        # 인원수만큼 음료 선택
         selected_drinks_df = drinks_pool.sample(person_count, replace=True)
-        drink_set = selected_drinks_df.to_dict('records')
+        drink_set = selected_drinks_df[['Category', 'Name', 'Price', 'Hashtags', 'Score']].to_dict('records') # Score 포함하여 딕셔너리로 변환
         total_drink_price = selected_drinks_df['Price'].sum()
         
         remaining_budget = total_budget - total_drink_price
@@ -104,19 +99,17 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_
         total_bakery_price = 0
         
         # 3. 베이커리 개수 결정 (1개 또는 2개)
-        # 베이커리도 높은 점수 메뉴 중에서만 샘플링
         n_bakeries = max(3, int(len(scored_bakeries) * 0.7))
         bakeries_pool = scored_bakeries.head(n_bakeries)
 
-        if bakeries_pool.empty: continue # 베이커리 풀이 비어있으면 다음 시도로 넘어감
+        if bakeries_pool.empty: continue
         
-        # 2개 구매가 가능한지 판단
         can_afford_two = (len(bakeries_pool) >= 2) and (remaining_budget >= (bakeries_pool['Price'].nsmallest(2).sum()))
 
         if (is_unlimited_budget or can_afford_two) and random.random() < 0.5: 
             # 3-1. 2개 베이커리 조합 시도
             possible_pairs = []
-            bakery_list = [row for index, row in bakeries_pool.iterrows()] # 높은 점수 메뉴 목록 사용
+            bakery_list = [row for index, row in bakeries_pool.iterrows()]
             
             for i in range(len(bakery_list)):
                 for j in range(i + 1, len(bakery_list)):
@@ -124,7 +117,10 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_
                     item2 = bakery_list[j]
                     
                     if is_unlimited_budget or (item1['Price'] + item2['Price'] <= remaining_budget):
-                        possible_pairs.append([item1.to_dict(), item2.to_dict()]) 
+                        # Series를 to_dict()로 변환할 때, Score 컬럼이 포함되도록 명시적 처리
+                        item1_dict = item1[['Category', 'Name', 'Price', 'Hashtags', 'Score']].to_dict()
+                        item2_dict = item2[['Category', 'Name', 'Price', 'Hashtags', 'Score']].to_dict()
+                        possible_pairs.append([item1_dict, item2_dict]) 
 
             if possible_pairs:
                 bakery_set = random.choice(possible_pairs)
@@ -139,7 +135,8 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_
                 
             if not affordable_bakeries.empty:
                 bakery = affordable_bakeries.sample(1).iloc[0]
-                bakery_set = [bakery.to_dict()]
+                # Score 컬럼을 포함하여 to_dict()로 변환
+                bakery_set = [bakery[['Category', 'Name', 'Price', 'Hashtags', 'Score']].to_dict()]
                 total_bakery_price = bakery['Price']
         
         
@@ -147,12 +144,14 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_
         if bakery_set:
             total_price = total_drink_price + total_bakery_price
             
-            # 고유성 체크를 위한 키 생성
             drink_names_sorted = sorted([item['Name'] for item in drink_set])
             bakery_names_sorted = sorted([item['Name'] for item in bakery_set])
             set_key = (tuple(drink_names_sorted), tuple(bakery_names_sorted))
             
             is_duplicate = any(rec['key'] == set_key for rec in recommendations)
+            
+            # 추천 세트의 총 점수 계산 (평균 대신 합계로 변경하여 점수의 명확성을 높임)
+            total_score = selected_drinks_df['Score'].sum() + sum(item['Score'] for item in bakery_set)
 
             if (is_unlimited_budget or total_price <= total_budget) and not is_duplicate:
                 recommendations.append({
@@ -160,18 +159,15 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_
                     'drink_set': drink_set,
                     'bakery_set': bakery_set,
                     'total_price': total_price,
-                    # 점수 정보 추가 (추천 세트의 평균 점수)
-                    'score': selected_drinks_df['Score'].mean() + sum(item.get('Score', 0) for item in bakery_set) / len(bakery_set)
+                    'score': total_score 
                 })
 
-    # 최종 추천된 세트들을 점수 기준으로 다시 정렬하여 최고의 세트가 먼저 나오도록 함
+    # 최종 추천된 세트들을 점수 기준으로 다시 정렬
     recommendations.sort(key=lambda x: x['score'], reverse=True)
     return recommendations
 
 
-# --- Streamlit 앱 구성 (이후 코드는 동일) ---
-
-# Streamlit 앱 구성 부분은 이전 코드와 동일하게 유지됩니다.
+# --- Streamlit 앱 구성 ---
 st.set_page_config(layout="wide")
 
 # 사이드바 (메뉴 추천 설정)
@@ -232,7 +228,7 @@ with st.sidebar:
     st.button("🔄 추천 새로고침", type="primary")
 
 # 메인 화면 구성
-st.title("🤖 AI 베이커리 메뉴 추천 시스템")
+st.title("AI 베이커리 메뉴 추천 시스템")
 
 # 탭 구성
 tab1, tab2 = st.tabs(["AI 메뉴 추천", "메뉴판"])
@@ -258,7 +254,7 @@ with tab1:
         for i, rec in enumerate(recommendations):
             with cols[i]:
                 st.markdown(f"### 🍰 추천 세트 #{i+1}")
-                st.caption(f"**일치 점수: {rec['score']:.2f}**") # 점수 표시
+                st.caption(f"**총 점수: {rec['score']}**") # 점수 표시 (합계)
                 
                 # 가격 정보 표시
                 if is_unlimited_budget:
@@ -276,21 +272,18 @@ with tab1:
                 st.markdown(f"#### ☕ **음료 추천 ({person_count}개)**")
                 drink_counts = pd.Series([item['Name'] for item in rec['drink_set']]).value_counts()
                 for name, count in drink_counts.items():
-                    original_price = df_drinks[df_drinks['Name'] == name]['Price'].iloc[0]
-                    st.markdown(f"- **{name}** x{count} ({original_price:,}원)")
-                    # 점수 정보도 함께 표시
-                    score = df_drinks[df_drinks['Name'] == name]['Score'].iloc[0]
-                    st.caption(f"  태그: {df_drinks[df_drinks['Name'] == name]['Hashtags'].iloc[0]} (점수: {score})")
+                    # df_drinks에서 해당 메뉴의 Score와 Hashtags를 찾습니다.
+                    menu_info = df_drinks[df_drinks['Name'] == name].iloc[0]
+                    st.markdown(f"- **{name}** x{count} ({menu_info['Price']:,}원)")
+                    st.caption(f"  태그: {menu_info['Hashtags']} (점수: {menu_info['Score']})")
                 
                 # 베이커리 추천 표시
                 st.markdown(f"#### 🍞 **베이커리 추천 ({len(rec['bakery_set'])}개)**")
                 for item in rec['bakery_set']:
                     if item.get('Category') == '베이커리': 
                         st.markdown(f"- **{item['Name']}** ({item['Price']:,}원)")
-                        score = item.get('Score', 'N/A')
-                        st.caption(f"  태그: {item['Hashtags']} (점수: {score})")
-                    # 이전 오류 방지용 메시지는 제거하거나 비활성화
-                
+                        st.caption(f"  태그: {item['Hashtags']} (점수: {item['Score']})")
+                    
     else:
         st.warning("😭 해당 조건(인원수/예산/태그)에 맞는 조합을 찾을 수 없거나, 메뉴판에 메뉴가 충분하지 않습니다. 조건을 조정해보세요.")
 
