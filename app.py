@@ -54,33 +54,47 @@ df_menu, all_tags = load_and_preprocess_data()
 df_drinks = df_menu[df_menu['Category'] == '음료'].copy()
 df_bakeries = df_menu[df_menu['Category'] == '베이커리'].copy()
 
-# --- AI 메뉴 추천 함수 ---
+# --- 점수 기반 필터링 및 추천 함수 ---
+def get_scored_menu(df, selected_tags):
+    """메뉴와 선택된 태그 간의 일치 점수를 계산하여 새 컬럼에 추가합니다."""
+    if not selected_tags:
+        df['Score'] = 1 # 태그 선택 없으면 모든 메뉴 점수 1
+    else:
+        df['Score'] = df['Tag_List'].apply(lambda x: len(set(x) & set(selected_tags)))
+    
+    # 점수 기준으로 내림차순 정렬 (점수가 높을수록 먼저 추천)
+    return df.sort_values(by=['Score', 'Price'], ascending=[False, True]).reset_index(drop=True)
+
+
 def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_drinks, df_bakeries):
+    """
+    점수, 인원수, 예산, 해시태그를 고려하여 음료(인원수)와 베이커리(1~2개) 조합 3세트를 추천합니다.
+    """
     
     total_budget = float('inf') if is_unlimited_budget else (budget * person_count)
 
-    # 1. 필터링된 메뉴 목록 생성
-    if selected_tags:
-        # 안전하게 필터링 조건을 각 데이터프레임에 직접 적용
-        drinks = df_drinks[df_drinks['Tag_List'].apply(lambda x: any(tag in selected_tags for tag in x))].copy()
-        bakeries = df_bakeries[df_bakeries['Tag_List'].apply(lambda x: any(tag in selected_tags for tag in x))].copy()
-    else:
-        drinks = df_drinks.copy() 
-        bakeries = df_bakeries.copy()
+    # 1. 점수 기반으로 메뉴 목록 생성
+    scored_drinks = get_scored_menu(df_drinks.copy(), selected_tags)
+    scored_bakeries = get_scored_menu(df_bakeries.copy(), selected_tags)
 
+    if scored_drinks.empty or scored_bakeries.empty or len(scored_drinks) < person_count:
+        return []
+        
     recommendations = []
     
-    if drinks.empty or bakeries.empty or len(drinks) < person_count:
-        return recommendations
-        
     attempts = 0
     max_attempts = 300 
 
     while len(recommendations) < 3 and attempts < max_attempts:
         attempts += 1
         
-        # 1. 음료 선택 (인원수만큼)
-        selected_drinks_df = drinks.sample(person_count, replace=True)
+        # 2. 음료 선택 (점수가 높은 메뉴를 우선적으로 선택)
+        # 높은 점수 메뉴 중에서만 샘플링 (점수 상위 70% 또는 최소 3개)
+        n_drinks = max(3, int(len(scored_drinks) * 0.7))
+        drinks_pool = scored_drinks.head(n_drinks)
+        
+        # 인원수만큼 음료 선택
+        selected_drinks_df = drinks_pool.sample(person_count, replace=True)
         drink_set = selected_drinks_df.to_dict('records')
         total_drink_price = selected_drinks_df['Price'].sum()
         
@@ -89,45 +103,47 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_
         bakery_set = []
         total_bakery_price = 0
         
-        # 2. 베이커리 개수 결정 (1개 또는 2개)
-        # 2개 구매가 가능한지 판단할 때, 베이커리 목록이 충분히 있는지 확인
-        can_afford_two = (len(bakeries) >= 2) and (remaining_budget >= (bakeries['Price'].nsmallest(2).sum()))
+        # 3. 베이커리 개수 결정 (1개 또는 2개)
+        # 베이커리도 높은 점수 메뉴 중에서만 샘플링
+        n_bakeries = max(3, int(len(scored_bakeries) * 0.7))
+        bakeries_pool = scored_bakeries.head(n_bakeries)
+
+        if bakeries_pool.empty: continue # 베이커리 풀이 비어있으면 다음 시도로 넘어감
+        
+        # 2개 구매가 가능한지 판단
+        can_afford_two = (len(bakeries_pool) >= 2) and (remaining_budget >= (bakeries_pool['Price'].nsmallest(2).sum()))
 
         if (is_unlimited_budget or can_afford_two) and random.random() < 0.5: 
-            # 2-1. 2개 베이커리 조합 시도
-            
-            # 베이커리 데이터프레임의 인덱스 리스트를 사용
-            bakery_indices = list(bakeries.index)
+            # 3-1. 2개 베이커리 조합 시도
             possible_pairs = []
+            bakery_list = [row for index, row in bakeries_pool.iterrows()] # 높은 점수 메뉴 목록 사용
             
-            for i in range(len(bakery_indices)):
-                for j in range(i + 1, len(bakery_indices)):
-                    item1 = bakeries.loc[bakery_indices[i]]
-                    item2 = bakeries.loc[bakery_indices[j]]
+            for i in range(len(bakery_list)):
+                for j in range(i + 1, len(bakery_list)):
+                    item1 = bakery_list[i]
+                    item2 = bakery_list[j]
                     
                     if is_unlimited_budget or (item1['Price'] + item2['Price'] <= remaining_budget):
-                        # 리스트에 딕셔너리로 변환된 항목 추가 (to_dict('records')와 동일한 형식)
                         possible_pairs.append([item1.to_dict(), item2.to_dict()]) 
 
             if possible_pairs:
                 bakery_set = random.choice(possible_pairs)
                 total_bakery_price = sum(item['Price'] for item in bakery_set)
                 
-        # 2-2. 1개 베이커리 조합 시도
+        # 3-2. 1개 베이커리 조합 시도
         if not bakery_set:
             if is_unlimited_budget:
-                affordable_bakeries = bakeries
+                affordable_bakeries = bakeries_pool
             else:
-                affordable_bakeries = bakeries[bakeries['Price'] <= remaining_budget]
+                affordable_bakeries = bakeries_pool[bakeries_pool['Price'] <= remaining_budget]
                 
             if not affordable_bakeries.empty:
                 bakery = affordable_bakeries.sample(1).iloc[0]
-                # Series를 to_dict()로 변환하여 리스트에 추가
                 bakery_set = [bakery.to_dict()]
                 total_bakery_price = bakery['Price']
         
         
-        # 3. 최종 추천 리스트에 추가
+        # 4. 최종 추천 리스트에 추가
         if bakery_set:
             total_price = total_drink_price + total_bakery_price
             
@@ -143,10 +159,15 @@ def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_
                     'key': set_key, 
                     'drink_set': drink_set,
                     'bakery_set': bakery_set,
-                    'total_price': total_price
+                    'total_price': total_price,
+                    # 점수 정보 추가 (추천 세트의 평균 점수)
+                    'score': selected_drinks_df['Score'].mean() + sum(item.get('Score', 0) for item in bakery_set) / len(bakery_set)
                 })
 
+    # 최종 추천된 세트들을 점수 기준으로 다시 정렬하여 최고의 세트가 먼저 나오도록 함
+    recommendations.sort(key=lambda x: x['score'], reverse=True)
     return recommendations
+
 
 # --- Streamlit 앱 구성 (이후 코드는 동일) ---
 
@@ -170,10 +191,8 @@ with st.sidebar:
     
     if 'total_budget' not in st.session_state: st.session_state['total_budget'] = 0
 
-    # 1인당 예산 슬라이더
     budget_value = 8000
     if not is_unlimited_budget:
-        # 슬라이더가 비활성화될 때 값을 유지하도록 처리
         budget = st.slider(
             "💰 1인당 예산을 설정해주세요", 
             min_value=5000, 
@@ -184,7 +203,6 @@ with st.sidebar:
         )
         st.session_state['total_budget'] = budget * person_count
     else:
-        # 비활성화된 슬라이더 표시 및 값 처리
         st.slider(
             "💰 1인당 예산을 설정해주세요", 
             min_value=5000, 
@@ -196,7 +214,6 @@ with st.sidebar:
         st.session_state['total_budget'] = "무제한"
         budget = 0 
     
-    # 레이블 업데이트
     budget_display_label = f" (총 예산: {st.session_state['total_budget']:,}원)" if st.session_state['total_budget'] != "무제한" else " (총 예산: 무제한)"
     st.markdown(f"1인당 예산 설정: **{budget_value:,}원**" + budget_display_label)
     
@@ -234,13 +251,14 @@ with tab1:
     recommendations = recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_drinks, df_bakeries)
 
     if recommendations:
-        st.subheader(f"✅ 조건에 맞는 조합 **{len(recommendations)}세트**를 추천합니다!")
+        st.subheader(f"✅ 조건에 맞는 조합 **{len(recommendations)}세트**를 추천합니다! (점수 높은 순)")
         
         cols = st.columns(len(recommendations))
         
         for i, rec in enumerate(recommendations):
             with cols[i]:
                 st.markdown(f"### 🍰 추천 세트 #{i+1}")
+                st.caption(f"**일치 점수: {rec['score']:.2f}**") # 점수 표시
                 
                 # 가격 정보 표시
                 if is_unlimited_budget:
@@ -260,19 +278,18 @@ with tab1:
                 for name, count in drink_counts.items():
                     original_price = df_drinks[df_drinks['Name'] == name]['Price'].iloc[0]
                     st.markdown(f"- **{name}** x{count} ({original_price:,}원)")
-                    st.caption(f"  태그: {df_drinks[df_drinks['Name'] == name]['Hashtags'].iloc[0]}")
+                    # 점수 정보도 함께 표시
+                    score = df_drinks[df_drinks['Name'] == name]['Score'].iloc[0]
+                    st.caption(f"  태그: {df_drinks[df_drinks['Name'] == name]['Hashtags'].iloc[0]} (점수: {score})")
                 
                 # 베이커리 추천 표시
                 st.markdown(f"#### 🍞 **베이커리 추천 ({len(rec['bakery_set'])}개)**")
                 for item in rec['bakery_set']:
-                    # 베이커리 아이템의 카테고리가 '베이커리'인지 확인 (추가 안정성 확보)
                     if item.get('Category') == '베이커리': 
                         st.markdown(f"- **{item['Name']}** ({item['Price']:,}원)")
-                        st.caption(f"  태그: {item['Hashtags']}")
-                    else:
-                         # 디버깅용 메시지 (실제 서비스에서는 제거 가능)
-                        st.warning(f"오류: 베이커리 자리에 {item.get('Category', '알 수 없는')} 메뉴 '{item['Name']}'가 추천되었습니다.")
-
+                        score = item.get('Score', 'N/A')
+                        st.caption(f"  태그: {item['Hashtags']} (점수: {score})")
+                    # 이전 오류 방지용 메시지는 제거하거나 비활성화
                 
     else:
         st.warning("😭 해당 조건(인원수/예산/태그)에 맞는 조합을 찾을 수 없거나, 메뉴판에 메뉴가 충분하지 않습니다. 조건을 조정해보세요.")
