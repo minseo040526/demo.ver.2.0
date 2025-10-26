@@ -3,302 +3,292 @@ import pandas as pd
 import random
 import re
 
-# --- 데이터 로드 및 전처리 함수 ---
+# --- 데이터 로드 및 전처리 ---
 @st.cache_data
-def load_and_preprocess_data():
-    """두 개의 CSV 파일을 로드하고 전처리하여 하나의 메뉴 DataFrame을 반환합니다."""
-    
-    def load_data(filename, category_name):
-        try:
-            df = pd.read_csv(filename)
-            df.columns = df.columns.str.strip().str.lower()
-            df = df.rename(columns={'name': 'Name', 'price': 'Price', 'tags': 'Hashtags'}, errors='ignore')
-            df['Category'] = category_name
-            # 필요한 컬럼만 선택하고, 인덱스를 0부터 재설정 (안정성 확보)
-            df = df[['Category', 'Name', 'Price', 'Hashtags']].reset_index(drop=True) 
-            return df
-        except FileNotFoundError:
-            # 임시 데이터는 이전과 동일하게 유지
-            if category_name == '베이커리':
-                return pd.DataFrame({
-                    'Category': ['베이커리', '베이커리', '베이커리', '베이커리'],
-                    'Name': ['크로와상', '소금빵', '에그타르트', '샌드위치'],
-                    'Price': [3500, 3200, 4000, 6000],
-                    'Hashtags': ['#버터#고소한', '#짭짤한#인기', '#달콤한', '#든든한']
-                })
-            else:
-                return pd.DataFrame({
-                    'Category': ['음료', '음료', '음료', '음료'],
-                    'Name': ['아메리카노', '카페 라떼', '녹차', '오렌지 주스'],
-                    'Price': [4000, 5000, 4500, 5500],
-                    'Hashtags': ['#깔끔#가벼운', '#부드러운#우유', '#전통#건강', '#상큼한']
-                })
-
-    df_bakery = load_data("Bakery_menu.csv", '베이커리')
-    df_drink = load_data("Drink_menu.csv", '음료')
-
-    df_menu = pd.concat([df_bakery, df_drink], ignore_index=True)
-    
-    def clean_tags(tags):
-        if pd.isna(tags): return []
-        tags_list = re.split(r'[#,\s]+', str(tags).strip())
-        return [tag.strip() for tag in tags_list if tag.strip()]
-
-    df_menu['Tag_List'] = df_menu['Hashtags'].apply(clean_tags)
-    all_tags = sorted(list(set(tag for sublist in df_menu['Tag_List'] for tag in sublist if tag)))
-
-    return df_menu, all_tags
-
-# 데이터 로드 및 전처리
-df_menu, all_tags = load_and_preprocess_data()
-df_drinks = df_menu[df_menu['Category'] == '음료'].copy()
-df_bakeries = df_menu[df_menu['Category'] == '베이커리'].copy()
-
-# --- AI 메뉴 추천 함수 ---
-def recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_drinks, df_bakeries):
-    
-    total_budget = float('inf') if is_unlimited_budget else (budget * person_count)
-
-    # 1. 필터링된 메뉴 목록 생성
-    if selected_tags:
-        # 안전하게 필터링 조건을 각 데이터프레임에 직접 적용
-        drinks = df_drinks[df_drinks['Tag_List'].apply(lambda x: any(tag in selected_tags for tag in x))].copy()
-        bakeries = df_bakeries[df_bakeries['Tag_List'].apply(lambda x: any(tag in selected_tags for tag in x))].copy()
-    else:
-        drinks = df_drinks.copy() 
-        bakeries = df_bakeries.copy()
-
-    recommendations = []
-    
-    if drinks.empty or bakeries.empty or len(drinks) < person_count:
-        return recommendations
-        
-    attempts = 0
-    max_attempts = 300 
-
-    while len(recommendations) < 3 and attempts < max_attempts:
-        attempts += 1
-        
-        # 1. 음료 선택 (인원수만큼)
-        selected_drinks_df = drinks.sample(person_count, replace=True)
-        drink_set = selected_drinks_df.to_dict('records')
-        total_drink_price = selected_drinks_df['Price'].sum()
-        
-        remaining_budget = total_budget - total_drink_price
-        
-        bakery_set = []
-        total_bakery_price = 0
-        
-        # 2. 베이커리 개수 결정 (1개 또는 2개)
-        # 2개 구매가 가능한지 판단할 때, 베이커리 목록이 충분히 있는지 확인
-        can_afford_two = (len(bakeries) >= 2) and (remaining_budget >= (bakeries['Price'].nsmallest(2).sum()))
-
-        if (is_unlimited_budget or can_afford_two) and random.random() < 0.5: 
-            # 2-1. 2개 베이커리 조합 시도
-            
-            # 베이커리 데이터프레임의 인덱스 리스트를 사용
-            bakery_indices = list(bakeries.index)
-            possible_pairs = []
-            
-            for i in range(len(bakery_indices)):
-                for j in range(i + 1, len(bakery_indices)):
-                    item1 = bakeries.loc[bakery_indices[i]]
-                    item2 = bakeries.loc[bakery_indices[j]]
-                    
-                    if is_unlimited_budget or (item1['Price'] + item2['Price'] <= remaining_budget):
-                        # 리스트에 딕셔너리로 변환된 항목 추가 (to_dict('records')와 동일한 형식)
-                        possible_pairs.append([item1.to_dict(), item2.to_dict()]) 
-
-            if possible_pairs:
-                bakery_set = random.choice(possible_pairs)
-                total_bakery_price = sum(item['Price'] for item in bakery_set)
-                
-        # 2-2. 1개 베이커리 조합 시도
-        if not bakery_set:
-            if is_unlimited_budget:
-                affordable_bakeries = bakeries
-            else:
-                affordable_bakeries = bakeries[bakeries['Price'] <= remaining_budget]
-                
-            if not affordable_bakeries.empty:
-                bakery = affordable_bakeries.sample(1).iloc[0]
-                # Series를 to_dict()로 변환하여 리스트에 추가
-                bakery_set = [bakery.to_dict()]
-                total_bakery_price = bakery['Price']
-        
-        
-        # 3. 최종 추천 리스트에 추가
-        if bakery_set:
-            total_price = total_drink_price + total_bakery_price
-            
-            # 고유성 체크를 위한 키 생성
-            drink_names_sorted = sorted([item['Name'] for item in drink_set])
-            bakery_names_sorted = sorted([item['Name'] for item in bakery_set])
-            set_key = (tuple(drink_names_sorted), tuple(bakery_names_sorted))
-            
-            is_duplicate = any(rec['key'] == set_key for rec in recommendations)
-
-            if (is_unlimited_budget or total_price <= total_budget) and not is_duplicate:
-                recommendations.append({
-                    'key': set_key, 
-                    'drink_set': drink_set,
-                    'bakery_set': bakery_set,
-                    'total_price': total_price
-                })
-
-    return recommendations
-
-# --- Streamlit 앱 구성 (이후 코드는 동일) ---
-
-# Streamlit 앱 구성 부분은 이전 코드와 동일하게 유지됩니다.
-st.set_page_config(layout="wide")
-
-# 사이드바 (메뉴 추천 설정)
-with st.sidebar:
-    st.header("✨ AI 메뉴 추천 시스템 설정")
-    
-    st.subheader("인원 및 예산 설정")
-    
-    person_count = st.slider(
-        "👨‍👩‍👧‍👦 인원수를 선택해주세요 (음료 개수)", 
-        min_value=1, 
-        max_value=5, 
-        value=1
-    )
-    
-    is_unlimited_budget = st.checkbox("💸 예산 상관없음 (무제한)", value=False)
-    
-    if 'total_budget' not in st.session_state: st.session_state['total_budget'] = 0
-
-    # 1인당 예산 슬라이더
-    budget_value = 8000
-    if not is_unlimited_budget:
-        # 슬라이더가 비활성화될 때 값을 유지하도록 처리
-        budget = st.slider(
-            "💰 1인당 예산을 설정해주세요", 
-            min_value=5000, 
-            max_value=15000, 
-            value=budget_value, 
-            step=500,
-            key='budget_slider'
-        )
-        st.session_state['total_budget'] = budget * person_count
-    else:
-        # 비활성화된 슬라이더 표시 및 값 처리
-        st.slider(
-            "💰 1인당 예산을 설정해주세요", 
-            min_value=5000, 
-            max_value=15000, 
-            value=budget_value, 
-            step=500,
-            disabled=True
-        )
-        st.session_state['total_budget'] = "무제한"
-        budget = 0 
-    
-    # 레이블 업데이트
-    budget_display_label = f" (총 예산: {st.session_state['total_budget']:,}원)" if st.session_state['total_budget'] != "무제한" else " (총 예산: 무제한)"
-    st.markdown(f"1인당 예산 설정: **{budget_value:,}원**" + budget_display_label)
-    
-    
-    st.subheader("선호 해시태그 선택 (최대 3개)")
-    
-    selected_tags = st.multiselect(
-        "📌 선호하는 키워드를 선택하세요:",
-        options=all_tags,
-        default=[],
-        max_selections=3,
-        help="메뉴의 특징을 나타내는 키워드를 최대 3개까지 선택할 수 있습니다."
-    )
-    
-    st.markdown("---")
-    st.button("🔄 추천 새로고침", type="primary")
-
-# 메인 화면 구성
-st.title("🤖 AI 베이커리 메뉴 추천 시스템")
-
-# 탭 구성
-tab1, tab2 = st.tabs(["AI 메뉴 추천", "메뉴판"])
-
-with tab1:
-    st.header("AI 메뉴 추천 결과")
-    
-    if is_unlimited_budget:
-        budget_display = "무제한"
-    else:
-        budget_display = f"{st.session_state['total_budget']:,}원 (1인당 {budget:,}원)"
-        
-    st.info(f"선택 인원: **{person_count}명** | 총 예산: **{budget_display}** | 선택 태그: **{', '.join(selected_tags) if selected_tags else '없음'}**")
-
-    # 추천 실행 및 결과 표시
-    recommendations = recommend_menu(person_count, budget, is_unlimited_budget, selected_tags, df_drinks, df_bakeries)
-
-    if recommendations:
-        st.subheader(f"✅ 조건에 맞는 조합 **{len(recommendations)}세트**를 추천합니다!")
-        
-        cols = st.columns(len(recommendations))
-        
-        for i, rec in enumerate(recommendations):
-            with cols[i]:
-                st.markdown(f"### 🍰 추천 세트 #{i+1}")
-                
-                # 가격 정보 표시
-                if is_unlimited_budget:
-                    st.markdown(f"**총 가격: {rec['total_price']:,}원**")
-                else:
-                    remaining_budget = st.session_state['total_budget'] - rec['total_price']
-                    st.metric(
-                        label="총 가격", 
-                        value=f"{rec['total_price']:,}원", 
-                        delta=f"{remaining_budget:,}원 남음"
-                    )
-                st.markdown("---")
-                
-                # 음료 추천 표시
-                st.markdown(f"#### ☕ **음료 추천 ({person_count}개)**")
-                drink_counts = pd.Series([item['Name'] for item in rec['drink_set']]).value_counts()
-                for name, count in drink_counts.items():
-                    original_price = df_drinks[df_drinks['Name'] == name]['Price'].iloc[0]
-                    st.markdown(f"- **{name}** x{count} ({original_price:,}원)")
-                    st.caption(f"  태그: {df_drinks[df_drinks['Name'] == name]['Hashtags'].iloc[0]}")
-                
-                # 베이커리 추천 표시
-                st.markdown(f"#### 🍞 **베이커리 추천 ({len(rec['bakery_set'])}개)**")
-                for item in rec['bakery_set']:
-                    # 베이커리 아이템의 카테고리가 '베이커리'인지 확인 (추가 안정성 확보)
-                    if item.get('Category') == '베이커리': 
-                        st.markdown(f"- **{item['Name']}** ({item['Price']:,}원)")
-                        st.caption(f"  태그: {item['Hashtags']}")
-                    else:
-                         # 디버깅용 메시지 (실제 서비스에서는 제거 가능)
-                        st.warning(f"오류: 베이커리 자리에 {item.get('Category', '알 수 없는')} 메뉴 '{item['Name']}'가 추천되었습니다.")
-
-                
-    else:
-        st.warning("😭 해당 조건(인원수/예산/태그)에 맞는 조합을 찾을 수 없거나, 메뉴판에 메뉴가 충분하지 않습니다. 조건을 조정해보세요.")
-
-
-with tab2:
-    st.header("📜 메뉴판")
-    st.markdown("베이커리의 전체 메뉴판을 확인하세요.")
-
-    # 메뉴판 사진 표시
+def load_data(file_path):
+    """메뉴 데이터 로드 및 전처리"""
     try:
-        col_img1, col_img2 = st.columns(2)
-        with col_img1:
-            st.image("menu_board_1.png", caption="메뉴판 (음료/베이커리 1)")
-        with col_img2:
-            st.image("menu_board_2.png", caption="메뉴판 (음료/베이커리 2)")
+        # 파일명: 'menu.csv'
+        df = pd.read_csv(file_path)
+        # 태그를 리스트 형태로 변환 (예: "#달콤한,#부드러운" -> ['달콤한', '부드러운'])
+        df['tags_list'] = df['tags'].apply(lambda x: [re.sub(r'#', '', tag).strip() for tag in x.split(',')])
+        return df
     except FileNotFoundError:
-        st.error("⚠️ 메뉴판 이미지 파일(menu_board_1.png, menu_board_2.png)을 찾을 수 없습니다. 파일을 확인해주세요.")
+        st.error(f"⚠️ 에러: {file_path} 파일을 찾을 수 없습니다. 파일을 확인해주세요.")
+        st.error("💡 'menu.csv' 파일에 '커피' 및 '음료' 카테고리를 포함하여 업데이트해야 정상적인 추천이 가능합니다.")
+        return pd.DataFrame()
+
+menu_df = load_data('menu.csv')
+
+# 사용 가능한 모든 태그 추출 (중복 제거)
+all_tags = sorted(list(set(tag for sublist in menu_df['tags_list'].dropna() for tag in sublist)))
+
+# 초기 세션 상태 설정
+if 'user_db' not in st.session_state:
+    st.session_state['user_db'] = {}
+if 'phone_number' not in st.session_state:
+    st.session_state['phone_number'] = None
+if 'page' not in st.session_state:
+    st.session_state['page'] = 'home'
+if 'recommended_set' not in st.session_state:
+    # 세트, 음료, 베이커리 데이터를 저장할 딕셔너리
+    st.session_state['recommendation_results'] = {'set': [], 'drink': pd.DataFrame(), 'bakery': pd.DataFrame()}
+    
+# --- 페이지 이동 함수 ---
+def set_page(page_name):
+    st.session_state['page'] = page_name
+
+# --- 컴포넌트 함수 ---
+def show_coupon_status():
+    """현재 사용자의 쿠폰 상태 표시"""
+    phone = st.session_state['phone_number']
+    if phone and phone in st.session_state['user_db']:
+        coupons = st.session_state['user_db'][phone]['coupons']
+        st.sidebar.markdown(f"**🎫 쿠폰함**")
+        st.sidebar.info(f"사용 가능한 쿠폰: **{coupons}개**")
+
+def use_coupon_toggle():
+    """쿠폰 사용 여부 체크박스 및 적용 로직"""
+    if st.session_state['phone_number'] and st.session_state['user_db'][st.session_state['phone_number']]['coupons'] > 0:
+        st.session_state['use_coupon'] = st.checkbox(
+            '🎫 쿠폰 1개 사용 (총 주문 금액 1,000원 할인)',
+            value=st.session_state.get('use_coupon', False)
+        )
+    else:
+        st.session_state['use_coupon'] = False
+        st.markdown("<p style='color:gray;'>사용 가능한 쿠폰이 없습니다.</p>", unsafe_allow_html=True)
+
+# --- 메뉴 추천 로직 ---
+def recommend_menus(df, budget, selected_tags, recommendation_count=3):
+    """예산, 태그를 고려하여 메인 세트 3개, 음료/베이커리 개별 추천"""
+
+    # 1. 태그 필터링
+    if selected_tags:
+        filtered_df = df[df['tags_list'].apply(lambda x: any(tag in selected_tags for tag in x))]
+    else:
+        filtered_df = df
+        
+    # 2. 메뉴 카테고리 분리
+    drink_categories = ['커피', '음료', '티']
+    bakery_categories = ['빵', '디저트']
+    main_categories = ['샌드위치', '샐러드']
+    
+    drink_df = filtered_df[filtered_df['category'].isin(drink_categories)]
+    bakery_df = filtered_df[filtered_df['category'].isin(bakery_categories)]
+    main_menu_df = filtered_df[filtered_df['category'].isin(main_categories)]
+    
+    # 3. 예산 안에서 가능한 조합 3세트 추천 (메인 + 베이커리)
+    set_recommendations = []
+    
+    # 조합 추천 시도
+    attempts = 0
+    
+    # 메인 + 베이커리 조합 추천이 불가능할 경우 단품만 추천하도록 로직을 유지
+    if not main_menu_df.empty and not bakery_df.empty:
+        while len(set_recommendations) < recommendation_count and attempts < 100:
+            attempts += 1
+            main_item = main_menu_df.sample(1).iloc[0]
+            bakery_item = bakery_df.sample(1).iloc[0]
+            total_price = main_item['price'] + bakery_item['price']
+            
+            if total_price <= budget:
+                combo = (
+                    f"**{main_item['name']}** + **{bakery_item['name']}** "
+                    f"(총 {total_price}원)"
+                )
+                combo_name = combo.split('(')[0].strip()
+                if not any(combo_name in rec for rec in set_recommendations):
+                    set_recommendations.append(combo)
+
+    # 조합이 부족하거나 불가능할 경우, 예산 내의 단품 메뉴 추가
+    if len(set_recommendations) < recommendation_count:
+        single_items = filtered_df[filtered_df['price'] <= budget].sort_values(by='price', ascending=False)
+        for _, row in single_items.head(recommendation_count - len(set_recommendations)).iterrows():
+            combo = f"**{row['name']}** (단품, {row['price']}원)"
+            if not any(combo in rec for rec in set_recommendations):
+                set_recommendations.append(combo)
+
+    # 4. 음료와 베이커리는 따로 추천하기 위해 필터링된 데이터프레임 반환
+    return set_recommendations, drink_df.sort_values(by='price', ascending=False), bakery_df.sort_values(by='price', ascending=False)
+
+
+# --- 페이지: 홈 (전화번호 입력) ---
+def home_page():
+    st.title("☕ AI 메뉴 추천 키오스크")
+    
+    st.subheader("👋 환영합니다! 전화번호를 입력해주세요.")
+    
+    phone_input = st.text_input(
+        "📱 휴대폰 번호 (예: 01012345678)", 
+        max_chars=11, 
+        key='phone_input_key'
+    )
+    
+    if st.button("시작하기", type="primary"):
+        if re.match(r'^\d{10,11}$', phone_input):
+            st.session_state['phone_number'] = phone_input
+            
+            # DB 조회 또는 신규 등록
+            if phone_input not in st.session_state['user_db']:
+                st.session_state['user_db'][phone_input] = {'coupons': 0, 'visits': 1}
+                st.success(f"🎉 신규 고객님으로 등록되었습니다!")
+            else:
+                st.session_state['user_db'][phone_input]['visits'] += 1
+                st.info(f"✨ {phone_input} 고객님, 다시 오셨네요! 방문 횟수: {st.session_state['user_db'][phone_input]['visits']}회")
+            
+            set_page('recommend')
+            st.rerun()
+        else:
+            st.error("유효하지 않은 전화번호 형식입니다. '-' 없이 10~11자리 숫자를 입력해주세요.")
+
+# --- 페이지: 추천 설정 및 결과 ---
+def recommend_page():
+    st.title("🤖 AI 맞춤 메뉴 추천")
+    
+    show_coupon_status()
+    
+    # --- 1. 설정 섹션 ---
+    st.subheader("1. 예산 설정, 쿠폰 및 해시태그")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        budget = st.slider(
+            "💰 최대 예산 설정 (원)",
+            min_value=5000, 
+            max_value=30000, 
+            step=1000, 
+            value=15000
+        )
+    
+    with col2:
+        st.markdown("##### 🎫 쿠폰 사용")
+        use_coupon_toggle()
+        
+    # 쿠폰 사용 시 예산 할인 적용
+    final_budget = budget
+    coupon_discount = 0
+    if st.session_state.get('use_coupon'):
+        coupon_discount = 1000 
+        final_budget = budget + coupon_discount 
+        st.info(f"쿠폰 사용으로 **{coupon_discount}원** 할인 적용! 추천은 최대 {final_budget}원 기준으로 진행됩니다.")
         
     st.markdown("---")
     
-    # 전체 메뉴표 데이터프레임으로 표시
-    st.subheader("전체 메뉴 리스트")
-    st.dataframe(df_menu[['Category', 'Name', 'Price', 'Hashtags']].rename(columns={
-        'Category': '구분', 
-        'Name': '메뉴명', 
-        'Price': '가격 (원)',
-        'Hashtags': '태그'
-    }), use_container_width=True, hide_index=True)
+    st.markdown("##### 🏷️ 선호 해시태그 선택 (최대 3개)")
+    selected_tags = st.multiselect(
+        "원하는 메뉴 스타일을 선택하세요:",
+        options=all_tags,
+        max_selections=3,
+        default=st.session_state.get('selected_tags', []),
+        label_visibility="collapsed"
+    )
+    st.session_state['selected_tags'] = selected_tags
+
+    # 추천 버튼
+    if st.button("메뉴 추천 받기", type="primary"):
+        set_recommendations, drink_df, bakery_df = recommend_menus(menu_df, final_budget, selected_tags, recommendation_count=3)
+        
+        st.session_state['recommendation_results']['set'] = set_recommendations
+        st.session_state['recommendation_results']['drink'] = drink_df
+        st.session_state['recommendation_results']['bakery'] = bakery_df
+        st.session_state['recommended'] = True
+        st.rerun()
+
+    # --- 2. 추천 결과 섹션 (탭 분리) ---
+    if st.session_state.get('recommended'):
+        st.markdown("---")
+        st.subheader("✨ 맞춤 추천 결과")
+        
+        set_tab, drink_tab, bakery_tab = st.tabs(["🎁 예산 내 세트 추천", "☕ 음료 추천", "🥐 베이커리 추천"])
+        
+        # 1. 세트 추천 탭
+        with set_tab:
+            sets = st.session_state['recommendation_results']['set']
+            if sets:
+                st.markdown("##### 예산 안에서 가능한 조합 3세트 (식사 + 베이커리)")
+                for i, rec in enumerate(sets):
+                    st.success(f"**세트 {i+1}**: {rec}")
+            else:
+                st.error("😭 선택하신 조건으로 추천 가능한 세트 조합이 없습니다. 예산 또는 해시태그를 조정해주세요.")
+        
+        # 2. 음료 추천 탭
+        with drink_tab:
+            drinks = st.session_state['recommendation_results']['drink']
+            if not drinks.empty:
+                st.markdown("##### 태그와 맞는 추천 음료")
+                drink_list = drinks.head(5) # 상위 5개만 표시
+                for _, row in drink_list.iterrows():
+                    st.write(f"- **{row['name']}** ({row['price']}원) | 태그: {', '.join(row['tags_list'])}")
+            else:
+                st.markdown("*(선택한 태그에 맞는 음료가 없습니다. 태그를 조정해 보세요.)*")
+
+        # 3. 베이커리 추천 탭
+        with bakery_tab:
+            bakery = st.session_state['recommendation_results']['bakery']
+            if not bakery.empty:
+                st.markdown("##### 태그와 맞는 추천 베이커리")
+                bakery_list = bakery.head(5) # 상위 5개만 표시
+                for _, row in bakery_list.iterrows():
+                    st.write(f"- **{row['name']}** ({row['price']}원) | 태그: {', '.join(row['tags_list'])}")
+            else:
+                st.markdown("*(선택한 태그에 맞는 베이커리가 없습니다. 태그를 조정해 보세요.)*")
+                
+        # 주문 완료 버튼 (추천 결과가 있을 경우에만 표시)
+        if st.session_state['recommendation_results']['set']:
+            st.markdown("---")
+            if st.button("🛒 주문 완료 및 쿠폰 발급", key='order_btn'):
+                set_page('order_complete')
+                st.rerun()
+
+# --- 페이지: 주문 완료 ---
+def order_complete_page():
+    st.title("✅ 주문 완료")
+    st.balloons()
+    
+    phone = st.session_state['phone_number']
+    
+    # 1. 쿠폰 사용 처리
+    if st.session_state.get('use_coupon') and phone in st.session_state['user_db']:
+        st.session_state['user_db'][phone]['coupons'] -= 1
+        st.warning("🎫 쿠폰 1개가 사용되었습니다.")
+        st.session_state['use_coupon'] = False
+    
+    # 2. 쿠폰 발급 (재방문 시 쿠폰함에 저장)
+    if phone in st.session_state['user_db']:
+        st.session_state['user_db'][phone]['coupons'] += 1
+        st.success("🎁 주문 감사 쿠폰 1개가 발급되어 쿠폰함에 저장되었습니다!")
+        st.info(f"현재 사용 가능 쿠폰: **{st.session_state['user_db'][phone]['coupons']}개**")
+    
+    st.markdown("---")
+    if st.button("🏠 처음으로 돌아가기"):
+        # 상태 초기화
+        st.session_state['phone_number'] = None
+        st.session_state['recommended'] = False
+        st.session_state['recommendation_results'] = {'set': [], 'drink': pd.DataFrame(), 'bakery': pd.DataFrame()}
+        st.session_state['use_coupon'] = False
+        set_page('home')
+        st.rerun()
+
+# --- 메인 앱 로직 ---
+def main():
+    st.set_page_config(page_title="AI 메뉴 추천 키오스크", layout="centered")
+
+    # 페이지 라우팅
+    if st.session_state['page'] == 'home':
+        home_page()
+    elif st.session_state['page'] == 'recommend':
+        # 데이터가 로드되지 않았다면 추천 페이지 진입 불가
+        if not menu_df.empty:
+            recommend_page()
+        else:
+            home_page() # 데이터 에러 시 홈으로 리디렉션
+    elif st.session_state['page'] == 'order_complete':
+        order_complete_page()
+
+if __name__ == "__main__":
+    if not menu_df.empty:
+        main()
+    else:
+        # 데이터 로드 실패 시 에러 메시지가 load_data 함수에서 출력됨
+        pass
